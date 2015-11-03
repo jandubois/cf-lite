@@ -1,0 +1,137 @@
+#!/bin/bash
+
+set -x
+
+RELEASE=222
+
+# gem install bosh-???
+# gem install csv2json yaml2json orderedhash
+# brew install jq coreutils direnv
+
+WS=$HOME/workspace
+mkdir -p $WS
+
+github_checkout() {
+    local repo=$1
+    local dir=$WS/$(echo $repo | sed 's/.*\///')
+    local branch=${2:-master}
+    if [[ ! -d $dir ]]; then
+        cd $WS
+        git clone --recursive git@github.com:$repo
+        if [[ -f $dir/.envrc ]]; then
+            direnv allow $dir
+        fi
+    fi
+    cd $dir
+    git reset --hard
+    git fetch
+    git checkout -B $branch origin/$branch
+}
+
+# Determine commit__hash for cf-release
+github_checkout cloudfoundry/cf-release
+
+CF_RELEASE=releases/cf-$RELEASE.yml
+if [[ ! -e $CF_RELEASE ]]; then
+    echo $CF_RELEASE does not exist!
+    exit
+fi
+
+# Add route to CF/Diego deployments
+sudo route delete -net 10.244.0.0/16 192.168.50.4
+sudo route add -net 10.244.0.0/16 192.168.50.4
+
+# Add route to Concourse deployment
+sudo route delete -net 192.168.100.0/24 192.168.50.4
+sudo route add -net 192.168.100.0/24 192.168.50.4
+
+
+COMMIT_HASH=$(yaml2json $CF_RELEASE | jq .commit_hash)
+
+# Determine corresponding release info for diego/garden/etcd
+github_checkout cloudfoundry-incubator/diego-cf-compatibility
+
+RELEASE_INFO=$(csv2json compatibility-v2.csv | jq -c "map( select(.CF_RELEASE_COMMIT_SHA | tostring == $COMMIT_HASH))|.[0]")
+echo $RELEASE_INFO | jq
+
+CF_RELEASE_COMMIT_SHA=$(echo $RELEASE_INFO | jq -r .CF_RELEASE_COMMIT_SHA)
+DIEGO_RELEASE_VERSION=$(echo $RELEASE_INFO | jq -r .DIEGO_RELEASE_VERSION)
+GARDEN_LINUX_RELEASE_VERSION=$(echo $RELEASE_INFO | jq -r .GARDEN_LINUX_RELEASE_VERSION)
+ETCD_RELEASE_VERSION=$(echo $RELEASE_INFO | jq -r .ETCD_RELEASE_VERSION)
+
+# Startup bosh-lite VM
+github_checkout cloudfoundry/bosh-lite develop
+
+perl -i -ne 'print; print "    v.memory = 8192\n" if /:virtualbox/' Vagrantfile
+
+vagrant destroy -f
+vagrant up
+
+bosh target 192.168.50.4 lite
+bosh login admin admin
+
+# Upload stemcell
+STEMCELL_SOURCE=http://bosh-jenkins-artifacts.s3.amazonaws.com/bosh-stemcell/warden
+STEMCELL_FILE=latest-bosh-stemcell-warden.tgz
+if [[ ! -e $STEMCELL_FILE ]]; then
+    curl --progress-bar "${STEMCELL_SOURCE}/${STEMCELL_FILE}" > "$STEMCELL_FILE"
+fi
+bosh -n upload stemcell --skip-if-exists $STEMCELL_FILE
+
+# build/upload/deploy cf-release
+cd $WS/cf-release
+
+./scripts/update
+./scripts/generate-bosh-lite-dev-manifest
+
+bosh status
+bosh -n upload release $CF_RELEASE
+bosh -n deploy
+
+# upload garden-linux and etcd releases
+bosh upload release https://bosh.io/d/github.com/cloudfoundry-incubator/garden-linux-release?v=$GARDEN_LINUX_RELEASE_VERSION
+bosh upload release https://bosh.io/d/github.com/cloudfoundry-incubator/etcd-release?v=$ETCD_RELEASE_VERSION
+
+# upload/deploy diego-release
+github_checkout cloudfoundry-incubator/diego-release
+
+./scripts/update
+./scripts/generate-bosh-lite-manifests
+
+bosh status
+bosh -n upload release releases/diego-$DIEGO_RELEASE_VERSION.yml
+bosh deployment bosh-lite/deployments/diego.yml
+bosh -n deploy
+
+cf login -a api.bosh-lite.com -u admin -p admin --skip-ssl-validation
+cf enable-feature-flag diego_docker
+
+cf create-org demo
+cf target -o demo
+cf create-space demo
+cf target -s demo
+
+# deploy concourse
+##################
+
+github_checkout concourse/concourse
+
+# Use default address for `fly` command
+perl -i -ne 's/10.244.8.2/192.168.100.4/; s/10.244.8/192.168.100/; print' manifests/bosh-lite.yml
+bosh deployment manifests/bosh-lite.yml
+# Find and deploy latest release
+CONCOURSE_RELEASE=$(ls -1 releases/concourse/concourse*.yml | gsort -r -V | head -1)
+bosh -n upload release $CONCOURSE_RELEASE
+bosh -n deploy
+
+# prepare for running inigo
+cd $WS/diego-release
+
+mkdir bin
+curl -s 'http://192.168.100.4:8080/api/v1/cli?arch=amd64&platform=darwin' > bin/fly
+chmod +x bin/fly
+
+# XXX The `fly` command from concourse-0.66.1 doesn't support the -k option
+perl -i -ne 's/fly -k/fly/; print' scripts/run-inigo
+
+# Concourse web UI: http://192.168.100.4:8080/
