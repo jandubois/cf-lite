@@ -77,7 +77,7 @@ STEMCELL_FILE=latest-bosh-stemcell-warden.tgz
 if [[ ! -e $STEMCELL_FILE ]]; then
     curl --progress-bar "${STEMCELL_SOURCE}/${STEMCELL_FILE}" > "$STEMCELL_FILE"
 fi
-bosh -n upload stemcell --skip-if-exists $STEMCELL_FILE
+bosh -n upload stemcell $STEMCELL_FILE
 
 # build/upload/deploy cf-release
 cd $WS/cf-release
@@ -99,7 +99,6 @@ github_checkout cloudfoundry-incubator/diego-release
 ./scripts/update
 ./scripts/generate-bosh-lite-manifests
 
-bosh status
 bosh -n upload release releases/diego-$DIEGO_RELEASE_VERSION.yml
 bosh deployment bosh-lite/deployments/diego.yml
 bosh -n deploy
