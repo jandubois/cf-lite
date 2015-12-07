@@ -46,18 +46,19 @@ sudo route delete -net 192.168.100.0/24 192.168.50.4
 sudo route add -net 192.168.100.0/24 192.168.50.4
 
 
-COMMIT_HASH=$(yaml2json $CF_RELEASE | jq .commit_hash)
+COMMIT_HASH=$(yaml2json $CF_RELEASE | jq '"X" + .commit_hash')
 
 # Determine corresponding release info for diego/garden/etcd
 github_checkout cloudfoundry-incubator/diego-cf-compatibility
 
-RELEASE_INFO=$(csv2json compatibility-v2.csv | jq -c "map( select(.CF_RELEASE_COMMIT_SHA | tostring == $COMMIT_HASH))|.[0]")
+# Prefix each field with "X" to make sure they are parsed as strings
+RELEASE_INFO=$(perl -pe '$. == 1 or s/,/,X/g' compatibility-v2.csv | csv2json | jq -c "map( select(.CF_RELEASE_COMMIT_SHA == $COMMIT_HASH))|.[0]")
 echo $RELEASE_INFO | jq
 
-CF_RELEASE_COMMIT_SHA=$(echo $RELEASE_INFO | jq -r .CF_RELEASE_COMMIT_SHA)
-DIEGO_RELEASE_VERSION=$(echo $RELEASE_INFO | jq -r .DIEGO_RELEASE_VERSION)
-GARDEN_LINUX_RELEASE_VERSION=$(echo $RELEASE_INFO | jq -r .GARDEN_LINUX_RELEASE_VERSION)
-ETCD_RELEASE_VERSION=$(echo $RELEASE_INFO | jq -r .ETCD_RELEASE_VERSION)
+CF_RELEASE_COMMIT_SHA=$(echo $RELEASE_INFO | jq -r .CF_RELEASE_COMMIT_SHA[1:])
+DIEGO_RELEASE_VERSION=$(echo $RELEASE_INFO | jq -r .DIEGO_RELEASE_VERSION[1:])
+GARDEN_LINUX_RELEASE_VERSION=$(echo $RELEASE_INFO | jq -r .GARDEN_LINUX_RELEASE_VERSION[1:])
+ETCD_RELEASE_VERSION=$(echo $RELEASE_INFO | jq -r .ETCD_RELEASE_VERSION[1:])
 
 # Startup bosh-lite VM
 github_checkout cloudfoundry/bosh-lite develop
