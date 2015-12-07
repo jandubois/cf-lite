@@ -63,7 +63,7 @@ ETCD_RELEASE_VERSION=$(echo $RELEASE_INFO | jq -r .ETCD_RELEASE_VERSION[1:])
 # Startup bosh-lite VM
 github_checkout cloudfoundry/bosh-lite develop
 
-perl -i -ne 'print; print "    v.memory = 8192\n" if /:virtualbox/' Vagrantfile
+perl -i -pe '$_.="    v.memory = 8192\n" if /:virtualbox/' Vagrantfile
 
 vagrant destroy -f
 vagrant up
@@ -118,7 +118,7 @@ cf target -s demo
 github_checkout concourse/concourse
 
 # Use default address for `fly` command
-perl -i -ne 's/10.244.8.2/192.168.100.4/; s/10.244.8/192.168.100/; print' manifests/bosh-lite.yml
+perl -i -pe 's/10.244.8.2/192.168.100.4/; s/10.244.8/192.168.100/' manifests/bosh-lite.yml
 bosh deployment manifests/bosh-lite.yml
 # Find and deploy latest release
 CONCOURSE_RELEASE=$(ls -1 releases/concourse/concourse*.yml | gsort -r -V | head -1)
@@ -133,6 +133,6 @@ curl -s 'http://192.168.100.4:8080/api/v1/cli?arch=amd64&platform=darwin' > bin/
 chmod +x bin/fly
 
 # XXX The `fly` command from concourse-0.66.1 doesn't support the -k option
-perl -i -ne 's/fly -k/fly/; print' scripts/run-inigo
+perl -i -pe 's/fly -k/fly/' scripts/run-inigo
 
 # Concourse web UI: http://192.168.100.4:8080/
